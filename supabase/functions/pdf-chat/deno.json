@@ -1,0 +1,21 @@
+{
+  "imports": {
+    "std/": "https://deno.land/std@0.168.0/",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.7.1"
+  },
+  "tasks": {
+    "start": "deno run --allow-net --allow-env --allow-read --allow-write --allow-ffi index.ts"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window", "dom"],
+    "strict": true
+  },
+  "permissions": {
+    "net": ["api.openai.com", "cdn.jsdelivr.net"],
+    "env": ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
+    "read": ["./", "./pdf_processor.py"],
+    "write": ["/tmp/pyodide-cache"],
+    "ffi": true
+  }
+} 

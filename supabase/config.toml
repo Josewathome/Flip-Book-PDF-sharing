@@ -1,0 +1,4 @@
+project_id = "xuuabpqrskpgtglfdepf"
+
+[functions.pdf-chat]
+verify_jwt = false
