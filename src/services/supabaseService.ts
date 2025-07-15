@@ -2,6 +2,7 @@
 import { supabase } from "@/integrations/supabase/client";
 import { PDFDocument, UploadPDFFormData, PDFPassword } from '../types/pdf';
 import { toast } from 'sonner';
+import { databaseService } from './databaseService';
 
 // Simulate password hashing (in a real app, this would be done securely on the server)
 const hashPassword = (password: string): string => {
@@ -24,28 +25,15 @@ export const uploadPDF = async (data: UploadPDFFormData): Promise<PDFDocument | 
 
     const userId = sessionData.session.user.id;
 
-    // Get file extension
-    const fileExt = data.file.name.split('.').pop();
-    const fileName = `${Math.random().toString(36).substring(2, 15)}.${fileExt}`;
-    const filePath = `${fileName}`;
-
-    // Upload file to Supabase Storage
-    const { data: fileData, error: uploadError } = await supabase.storage
-      .from('pdfs')
-      .upload(filePath, data.file);
-
-    if (uploadError) {
-      throw uploadError;
-    }
-
-    // Get public URL for the uploaded file
-    const { data: publicURLData } = supabase.storage.from('pdfs').getPublicUrl(filePath);
+    // Upload file to external database
+    const fileName = `${Math.random().toString(36).substring(2, 15)}_${data.file.name}`;
+    const fileId = await databaseService.uploadFile(data.file, fileName, userId);
     
     // Insert metadata into database
     const newPDF = {
       name: data.name,
       description: data.description,
-      file_path: publicURLData.publicUrl,
+      file_path: fileId, // Store file ID instead of URL
       password_hash: data.password ? hashPassword(data.password) : null,
       password_protected: !!data.password,
       user_id: userId // Associate PDF with current user
@@ -59,7 +47,7 @@ export const uploadPDF = async (data: UploadPDFFormData): Promise<PDFDocument | 
 
     if (insertError) {
       // If there was an error inserting metadata, clean up the uploaded file
-      await supabase.storage.from('pdfs').remove([filePath]);
+      await databaseService.deleteFile(fileId);
       throw insertError;
     }
 
@@ -104,7 +92,7 @@ export const getAllPDFs = async (): Promise<PDFDocument[]> => {
 
 export const getPDFById = async (id: string): Promise<PDFDocument | null> => {
   try {
-    // No authentication required - anyone with the ID can view the PDF
+    // Get PDF metadata from Supabase
     const { data, error } = await supabase
       .from('pdfs')
       .select('*')
@@ -115,7 +103,13 @@ export const getPDFById = async (id: string): Promise<PDFDocument | null> => {
       throw error;
     }
 
-    return data;
+    // Get file URL from external database
+    const fileUrl = await databaseService.getFileUrl(data.file_path);
+    
+    return {
+      ...data,
+      file_path: fileUrl // Replace file ID with actual file URL
+    };
   } catch (error) {
     console.error('Error fetching PDF:', error);
     return null;
@@ -179,29 +173,14 @@ export const updatePDF = async (id: string, data: Partial<UploadPDFFormData>): P
 
     // If there's a new file, upload it
     if (data.file) {
-      // Extract the old file path to delete it later
-      const oldFilePath = existingPDF.file_path.split('/').pop();
-      
-      // Upload new file
-      const fileExt = data.file.name.split('.').pop();
-      const fileName = `${Math.random().toString(36).substring(2, 15)}.${fileExt}`;
-      const filePath = `${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('pdfs')
-        .upload(filePath, data.file);
-
-      if (uploadError) {
-        throw uploadError;
-      }
-
-      // Get public URL for the uploaded file
-      const { data: publicURLData } = supabase.storage.from('pdfs').getPublicUrl(filePath);
-      updateData.file_path = publicURLData.publicUrl;
+      // Upload new file to external database
+      const fileName = `${Math.random().toString(36).substring(2, 15)}_${data.file.name}`;
+      const newFileId = await databaseService.uploadFile(data.file, fileName, userId);
+      updateData.file_path = newFileId;
 
       // Delete old file
-      if (oldFilePath) {
-        await supabase.storage.from('pdfs').remove([oldFilePath]);
+      if (existingPDF.file_path) {
+        await databaseService.deleteFile(existingPDF.file_path);
       }
     }
 
@@ -262,12 +241,9 @@ export const deletePDF = async (id: string): Promise<boolean> => {
       throw deleteError;
     }
 
-    // Delete from storage if we have a valid path
+    // Delete from external database storage
     if (pdfData && pdfData.file_path) {
-      const filePath = pdfData.file_path.split('/').pop();
-      if (filePath) {
-        await supabase.storage.from('pdfs').remove([filePath]);
-      }
+      await databaseService.deleteFile(pdfData.file_path);
     }
 
     toast.success('PDF deleted successfully!');

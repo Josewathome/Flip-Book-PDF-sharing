@@ -1,6 +1,15 @@
 // @deno-types="npm:@types/pdfjs-dist"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.7.1';
 
+// Database configuration for external MySQL database
+const DB_CONFIG = {
+  host: '165.140.159.174',
+  username: 'gre8_josemain',
+  password: 'LZot1208FaKru',
+  database: 'gre8_aria',
+  apiUrl: 'http://165.140.159.174:3001/api'
+};
+
 // Import types for PDF.js
 interface PDFPageItem {
   str: string;
@@ -605,40 +614,70 @@ async function storeEmbeddingsInStorage(
   method: string
 ): Promise<StorageEmbeddingResult> {
   try {
-    const { data, error } = await supabase
-      .from('pdf_analysis')
-      .select('embedding_url')
-      .eq('pdf_id', pdfId)
-      .single();
-
-    if (error && error.code !== 'PGRST116') throw error;
-
-    const bucketName = 'embeddings';
-    const fileName = `${pdfId}_${Date.now()}.json`;
+    console.log('[Embeddings] Storing embeddings in external database');
     
-    // Upload to storage bucket
-    const { error: uploadError } = await supabase.storage
-      .from(bucketName)
-      .upload(fileName, JSON.stringify({
-        chunks,
-        embeddings,
-        method,
-        timestamp: new Date().toISOString()
-      }));
+    // Store embeddings in external database
+    const response = await fetch(`${DB_CONFIG.apiUrl}/embeddings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        pdfId,
+        embeddingData: JSON.stringify({
+          chunks,
+          embeddings,
+          method,
+          timestamp: new Date().toISOString()
+        })
+      })
+    });
 
-    if (uploadError) throw uploadError;
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to store embeddings');
+    }
 
-    // Get public URL
-    const { data: { publicUrl } } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(fileName);
+    const result = await response.json();
+    const embeddingUrl = `${DB_CONFIG.apiUrl}/embeddings/${pdfId}`;
 
-    return { success: true, url: publicUrl };
+    return { success: true, url: embeddingUrl };
   } catch (error) {
     console.error('[Embeddings] Storage error:', error);
     return { 
       success: false, 
       error: error instanceof Error ? error.message : 'Storage failed'
+    };
+  }
+}
+
+async function getEmbeddingsFromStorage(url: string): Promise<StorageEmbeddingResponse> {
+  try {
+    console.log('[Embeddings] Fetching embeddings from external database');
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch embeddings: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    const embeddingData = JSON.parse(data.embeddingData);
+    
+    return { 
+      success: true, 
+      data: {
+        document_embedding: embeddingData.embeddings[0], // First embedding is document embedding
+        chunks,
+        embeddings,
+        method: embeddingData.method,
+        chunks_count: embeddingData.chunks.length
+      }
+    };
+  } catch (error) {
+    console.error('[Embeddings] Error fetching embeddings from external database:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'External database fetch failed'
     };
   }
 }

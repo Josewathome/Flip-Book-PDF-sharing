@@ -2,6 +2,15 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.7.1';
 import { corsHeaders } from '../_shared/cors.ts';
 
+// Database configuration for external MySQL database
+const DB_CONFIG = {
+  host: '165.140.159.174',
+  username: 'gre8_josemain',
+  password: 'LZot1208FaKru',
+  database: 'gre8_aria',
+  apiUrl: 'http://165.140.159.174:3001/api'
+};
+
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -184,28 +193,31 @@ export async function generatePodcast(pdfId: string, pdfName: string, forceRegen
     console.log('[Audio Generator] Combining audio segments');
     const combinedAudio = concatUint8Arrays(audioSegments);
     
-    // Create organized filename with timestamp
-    const timestamp = new Date().toISOString();
-    const sanitizedPdfName = pdfName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    const audioFileName = `${sanitizedPdfName}/${pdfId}/${timestamp}.mp3`;
+    // Store audio in external database
+    console.log('[Storage] Storing audio in external database');
+    const audioBase64 = btoa(String.fromCharCode(...combinedAudio));
+    
+    const storageResponse = await fetch(`${DB_CONFIG.apiUrl}/podcasts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        pdfId,
+        audioData: audioBase64,
+        audioType: 'audio/mp3'
+      })
+    });
 
-    // Upload combined audio to storage
-    console.log('[Storage] Uploading audio file');
-    const { error: uploadError } = await supabase.storage
-      .from('podcasts')
-      .upload(audioFileName, combinedAudio, {
-        contentType: 'audio/mp3',
-        cacheControl: '3600'
-      });
-
-    if (uploadError) {
-      throw new Error(`Failed to upload audio: ${uploadError.message}`);
+    if (!storageResponse.ok) {
+      const errorData = await storageResponse.json();
+      throw new Error(`Failed to store audio: ${errorData.error}`);
     }
 
-    // Get public URL for the uploaded audio
-    const { data: { publicUrl } } = supabase.storage
-      .from('podcasts')
-      .getPublicUrl(audioFileName);
+    const storageResult = await storageResponse.json();
+    
+    // Create URL for accessing the audio
+    const publicUrl = `${DB_CONFIG.apiUrl}/podcasts/${pdfId}`;
 
     // Save final state with both script and audio URL
     console.log('[Database] Saving final state with audio URL');
@@ -219,8 +231,7 @@ export async function generatePodcast(pdfId: string, pdfName: string, forceRegen
         podcast_generated_at: completionTime,
         podcast_error: null,
         updated_at: completionTime
-      })
-      .eq('pdf_id', pdfId);
+      });
 
     if (finalError) {
       console.error('[Database] Error saving final state:', finalError);
@@ -267,18 +278,6 @@ export async function checkPodcastStatus(pdfId: string): Promise<Response> {
   try {
     console.log(`[Status Check] Checking podcast status for PDF: ${pdfId}`);
 
-    // First verify the PDF exists
-    const { data: pdfExists, error: pdfError } = await supabase
-      .from('pdfs')
-      .select('id')
-      .eq('id', pdfId)
-      .single();
-
-    if (pdfError) {
-      console.error('[Status Check] PDF not found:', { pdfId, error: pdfError });
-      throw new Error(`PDF not found: ${pdfError.message}`);
-    }
-
     // Check podcast analysis status
     const { data: analysis, error } = await supabase
       .from('pdf_analysis')
@@ -301,15 +300,29 @@ export async function checkPodcastStatus(pdfId: string): Promise<Response> {
       throw error;
     }
 
+    // If we have an audio URL, convert it to a data URL for the frontend
+    let audioUrl = analysis?.podcast_audio_url;
+    if (audioUrl && audioUrl.includes(DB_CONFIG.apiUrl)) {
+      try {
+        const audioResponse = await fetch(audioUrl);
+        if (audioResponse.ok) {
+          const audioData = await audioResponse.json();
+          audioUrl = `data:${audioData.audioType};base64,${audioData.audioData}`;
+        }
+      } catch (audioError) {
+        console.error('[Status Check] Error fetching audio data:', audioError);
+      }
+    }
+
     console.log('[Status Check] Successfully retrieved podcast status:', {
       status: analysis?.podcast_status,
       hasScript: !!analysis?.podcast_script,
-      hasAudio: !!analysis?.podcast_audio_url
+      hasAudio: !!audioUrl
     });
 
     const response = {
       script: analysis?.podcast_script,
-      audioUrl: analysis?.podcast_audio_url,
+      audioUrl,
       status: analysis?.podcast_status || 'failed',
       error: analysis?.podcast_error,
       generatedAt: analysis?.podcast_generated_at
